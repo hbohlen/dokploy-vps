@@ -43,14 +43,18 @@ jobs:
           type=ref,event=branch
           type=ref,event=pr
           type=sha,prefix=sha-
-          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: ./falkordb
+        file: ./falkordb/Dockerfile
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        # Add build args if needed
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
