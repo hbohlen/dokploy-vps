@@ -13,6 +13,18 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - **Root Access**: DigitalOcean Console only
 - **Services**: Dokploy with Traefik reverse proxy
 
+## System Specifications
+
+- **OS**: Ubuntu 24.04.3 LTS (Noble Numbat)
+- **Kernel**: 6.8.0-78-generic
+- **Architecture**: x86_64
+- **Memory**: 2GB RAM
+- **Storage**: 48GB SSD (26% used)
+- **CPU**: 1 vCPU (load average: ~0.4)
+- **Uptime**: ~22 hours
+- **User Account**: `hbohlen` with full sudo privileges
+- **Active Services**: Docker, Tailscale, SSH, systemd-networkd, and others
+
 ## Access Requirements
 
 ### Prerequisites
@@ -61,22 +73,79 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 ## Current Configuration Status
 
 ### Dokploy
-- **Status**: [TO BE DISCOVERED]
-- **Installation Path**: [TO BE DISCOVERED]
-- **Configuration Files**: [TO BE DISCOVERED]
+- **Status**: Running as Docker container `dokploy.1.*` on port 3000
+- **Installation Path**: `/etc/dokploy` (configuration directory)
+- **Configuration Files**:
+  - Main config: `/etc/dokploy/traefik/dynamic/dokploy.yml`
+  - Applications: `/etc/dokploy/applications/`
+  - Compose files: `/etc/dokploy/compose/`
+  - Logs: `/etc/dokploy/logs/`
+  - SSH keys: `/etc/dokploy/ssh/`
+  - Volume backups: `/etc/dokploy/volume-backups/`
+- **Database**: PostgreSQL (internal container on port 5432)
+- **Cache**: Redis (internal container on port 6379)
+- **Web Access**: `https://hbohlen.systems` (via Traefik with Let's Encrypt SSL)
 
 ### Traefik
-- **Configuration Path**: [TO BE DISCOVERED]
-- **Dynamic Routing**: [TO BE DISCOVERED]
-- **Middleware Setup**: [TO BE DISCOVERED]
-- **Certificate Management**: [TO BE DISCOVERED]
+- **Configuration Path**: `/etc/dokploy/traefik/traefik.yml`
+- **Dynamic Routing**: `/etc/dokploy/traefik/dynamic/` (dokploy.yml, middlewares.yml)
+- **Middleware Setup**: HTTPS redirect middleware configured
+- **Certificate Management**:
+  - Let's Encrypt ACME with HTTP-01 challenge
+  - Email: `bohlenhayden@gmail.com`
+  - Storage: `/etc/dokploy/traefik/dynamic/acme.json`
+  - Automatic renewal enabled
+- **Access Logs**: JSON format at `/etc/dokploy/traefik/dynamic/access.log`
+- **Entry Points**: HTTP (80), HTTPS (443) with HTTP/3 support
 
 ### Docker Environment
-- **Network Setup**: [TO BE DISCOVERED]
-- **Running Services**: [TO BE DISCOVERED]
-- **Volume Configuration**: [TO BE DISCOVERED]
+- **Network Setup**: Overlay network `dokploy-network` (10.0.1.0/24) in Docker Swarm mode
+- **Running Services**:
+  - `dokploy-traefik`: Traefik reverse proxy (ports 80, 443, 8080)
+  - `dokploy-redis`: Redis database (port 6379 internal)
+  - `dokploy`: Dokploy main application (port 3000)
+  - `dokploy-postgres`: PostgreSQL database (port 5432 internal)
+- **Volume Configuration**:
+  - `../files/` pattern recommended for persistent data across deployments
+  - `dokploy-docker-config`: Docker configuration storage
+  - `dokploy-postgres-database`: PostgreSQL data persistence
+  - `redis-data-volume`: Redis data persistence
+  - `projects-langflow-ygqerf_*`: Langflow project volumes (stopped)
+  - **Best Practice**: Use `../files/service-name:/container/path` for data persistence
+
+### Dokploy Volume Best Practices
+- **Recommended Pattern**: Use `../files/` relative paths instead of host bind mounts
+- **Persistence**: Data survives container restarts and redeployments
+- **Example**: `../files/falkordb-data:/var/lib/falkordb/data`
+- **Storage Location**: Files stored in `/opt/dokploy-vps/files/` on the host
+- **Avoid**: Direct host paths like `/folder:/path` (cleaned up on redeployment)
+
+### Network & Service Status
+- **Active Ports**:
+  - `22/tcp`: SSH (OpenSSH)
+  - `80/tcp`: HTTP (Traefik)
+  - `443/tcp`: HTTPS (Traefik) with HTTP/3 support
+  - `3000/tcp`: Dokploy dashboard
+  - `8080/tcp`: Traefik dashboard
+  - `2377/tcp`: Docker Swarm management
+  - `7946/tcp`: Docker Swarm node communication
+  - `41641/udp`: Tailscale
+- **SSL/TLS**: Active with Let's Encrypt certificates (TLS 1.3, AES-128-GCM)
+- **Service Health**: All core services running and accessible
+- **External Access**: Restricted to Tailscale network (100.64.0.0/10)
 
 ## Security Best Practices
+
+### Current Security Status
+- **Firewall**: UFW active with Tailscale access and restricted HTTP/HTTPS to Tailnet (100.64.0.0/10)
+- **SSH**: Root login disabled, key-based authentication enabled, password authentication disabled
+- **File Permissions**:
+  - Dokploy config: `/etc/dokploy/` (777 - world writable, concerning)
+  - SSH keys: `/etc/dokploy/ssh/` (700 - secure)
+  - SSL certificates: `/etc/dokploy/traefik/dynamic/acme.json` (600 - secure)
+  - Docker socket: `/var/run/docker.sock` (660, root:docker - appropriate)
+- **User Access**: `hbohlen` user has sudo and docker group membership
+- **Tailscale**: Active and properly configured for network security
 
 ### Access Control
 - Never expose services outside Tailscale without explicit firewall rules
@@ -93,10 +162,12 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 ## Troubleshooting
 
 ### Common Issues
-- **Cannot reach services**: Verify Tailscale connection to `100.114.180.23`
-- **SSH access denied**: Use `hbohlen` user, not `root`
-- **SSL certificate issues**: Check Traefik Let's Encrypt configuration
-- **Service routing problems**: Review Traefik dynamic configuration
+- **Cannot reach services**: Verify Tailscale connection to `100.114.180.23` and check UFW firewall status
+- **SSH access denied**: Use `hbohlen` user (not root), ensure SSH key is properly configured
+- **SSL certificate issues**: Check `/etc/dokploy/traefik/dynamic/acme.json` and Traefik logs
+- **Service routing problems**: Review `/etc/dokploy/traefik/dynamic/dokploy.yml` configuration
+- **Dokploy not accessible**: Check if `dokploy.1.*` container is running: `docker ps`
+- **Database connection issues**: Verify `dokploy-postgres.1.*` and `dokploy-redis.1.*` containers
 
 ### Debug Commands
 ```bash
@@ -109,14 +180,33 @@ ssh hbohlen@hbohlen.systems
 
 # Check service status
 docker ps
-docker logs <container-name>
+docker logs dokploy.1.*  # Dokploy main app
+docker logs dokploy-traefik  # Traefik proxy
+
+# Check network connectivity
+curl -I https://hbohlen.systems
+curl -I http://localhost:8080  # Traefik dashboard
+
+# Check firewall status
+sudo ufw status
+
+# Check listening ports
+sudo ss -tlnp | grep LISTEN
+
+# Check Dokploy configuration
+sudo cat /etc/dokploy/traefik/dynamic/dokploy.yml
+
+# Check system resources
+df -h  # Disk usage
+free -h  # Memory usage
+uptime  # System load
 ```
 
 ### Log Locations
-- **Traefik Access Logs**: [TO BE DISCOVERED]
-- **Dokploy Logs**: [TO BE DISCOVERED]
-- **Docker Logs**: `docker logs <container>`
-- **System Logs**: `journalctl -u docker`
+- **Traefik Access Logs**: `/etc/dokploy/traefik/dynamic/access.log` (JSON format)
+- **Dokploy Logs**: `/etc/dokploy/logs/` (per-project logs)
+- **Docker Logs**: `docker logs <container>` or `docker logs dokploy.1.*` for Dokploy
+- **System Logs**: `journalctl -u docker` or `journalctl -u tailscaled`
 
 ## Project Goals
 
