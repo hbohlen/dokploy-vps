@@ -31,6 +31,7 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - Must be connected to Tailscale network
 - SSH access via `hbohlen` user account
 - Domain resolves to Tailnet IP for security
+- DigitalOcean Personal Access Token (for DNS-01 certificate validation)
 
 ### Service Access
 - **Dokploy Dashboard**: `https://hbohlen.systems` (Tailnet only)
@@ -45,9 +46,14 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - Tailscale UDP (41641): Open for mesh connectivity
 
 ### Domain Configuration
-- A record: `hbohlen.systems` → `100.114.180.23` (Tailnet IP)
-- Wildcard support for subdomains via Traefik
-- Let's Encrypt certificates managed automatically
+- **A Record**: `hbohlen.systems` → `100.114.180.23` (Tailnet IP)
+- **Wildcard Support**: Subdomains via Traefik routing
+- **SSL Certificates**:
+  - **Method**: Let's Encrypt ACME with DNS-01 challenge
+  - **DNS Provider**: DigitalOcean API
+  - **Current Certificate**: Valid for `hbohlen.systems` (Aug 29 - Nov 27, 2025)
+  - **Auto-Renewal**: Enabled via Traefik
+- **Security**: Domain accessible only through Tailscale network
 
 ## Development Workflow
 
@@ -91,10 +97,12 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - **Dynamic Routing**: `/etc/dokploy/traefik/dynamic/` (dokploy.yml, middlewares.yml)
 - **Middleware Setup**: HTTPS redirect middleware configured
 - **Certificate Management**:
-  - Let's Encrypt ACME with HTTP-01 challenge
-  - Email: `bohlenhayden@gmail.com`
-  - Storage: `/etc/dokploy/traefik/dynamic/acme.json`
-  - Automatic renewal enabled
+  - **Method**: Let's Encrypt ACME with DNS-01 challenge
+  - **DNS Provider**: DigitalOcean API
+  - **Email**: `bohlenhayden@gmail.com`
+  - **Storage**: `/etc/dokploy/traefik/dynamic/acme.json`
+  - **Automatic Renewal**: Enabled via Traefik
+  - **API Token**: `DO_AUTH_TOKEN` environment variable required
 - **Access Logs**: JSON format at `/etc/dokploy/traefik/dynamic/access.log`
 - **Entry Points**: HTTP (80), HTTPS (443) with HTTP/3 support
 
@@ -154,10 +162,22 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - Monitor access logs for unexpected traffic
 
 ### Certificate Management
-- All certificates managed via Let's Encrypt
-- Contact email: `bohlenhayden@gmail.com`
-- Automatic renewal via Traefik
-- Test new domains with staging certificates first
+- **Method**: Let's Encrypt ACME with DNS-01 challenge
+- **DNS Provider**: DigitalOcean API
+- **Contact Email**: `bohlenhayden@gmail.com`
+- **Storage**: `/etc/dokploy/traefik/dynamic/acme.json`
+- **Automatic Renewal**: Enabled via Traefik
+- **Current Certificate**:
+  - Domain: `hbohlen.systems`
+  - Issuer: Let's Encrypt R13
+  - Valid: Aug 29 - Nov 27, 2025
+  - Status: ✅ Active and Trusted
+
+#### DigitalOcean API Configuration
+- **API Token Required**: Personal Access Token with DNS permissions
+- **Environment Variable**: `DO_AUTH_TOKEN` in Traefik container
+- **Token Scope**: Must include DNS read/write permissions
+- **Security Note**: Token stored securely in container environment
 
 ## Troubleshooting
 
@@ -168,6 +188,85 @@ This repository documents and manages a DigitalOcean VPS running Dokploy with Ta
 - **Service routing problems**: Review `/etc/dokploy/traefik/dynamic/dokploy.yml` configuration
 - **Dokploy not accessible**: Check if `dokploy.1.*` container is running: `docker ps`
 - **Database connection issues**: Verify `dokploy-postgres.1.*` and `dokploy-redis.1.*` containers
+
+### SSL Certificate Troubleshooting
+
+#### Issue: `net::ERR_CERT_COMMON_NAME_INVALID`
+**Problem**: Certificate domain name doesn't match the accessed domain
+**Root Cause**: Domain points to Tailscale IP, preventing Let's Encrypt HTTP-01 validation
+**Solution**: Use DNS-01 challenge with DigitalOcean API
+
+#### Certificate Resolution Steps (Completed)
+1. **Identified Problem**:
+   - Domain `hbohlen.systems` → `100.114.180.23` (Tailscale IP)
+   - Let's Encrypt can't reach Tailscale IPs for HTTP-01 validation
+   - Browser shows certificate mismatch error
+
+2. **Initial Attempts**:
+   - Tried HTTP-01 challenge → Failed (Tailscale IP unreachable)
+   - Tried Tailscale certificates → Failed (only for .ts.net domains)
+   - Considered DNS change → Not preferred (wanted to keep Tailscale security)
+
+3. **Final Solution - DNS-01 Challenge**:
+   - **Method**: DNS-01 validation using DigitalOcean API
+   - **Requirements**: DigitalOcean Personal Access Token with DNS permissions
+   - **Configuration**: Updated Traefik to use `dnsChallenge` provider
+   - **Result**: ✅ Valid certificate issued for `hbohlen.systems`
+
+4. **Implementation Details**:
+   ```yaml
+   # Traefik configuration updated to:
+   certificatesResolvers:
+     letsencrypt:
+       acme:
+         email: bohlenhayden@gmail.com
+         storage: /etc/dokploy/traefik/dynamic/acme.json
+         dnsChallenge:
+           provider: digitalocean
+           delayBeforeCheck: 30s
+   ```
+
+5. **Container Recreation**:
+   - Stopped old Traefik container
+   - Recreated with `DO_AUTH_TOKEN` environment variable
+   - Verified DNS-01 challenge completion
+   - Confirmed certificate validity
+
+#### Current Certificate Status
+- **Domain**: `hbohlen.systems`
+- **Issuer**: Let's Encrypt R13
+- **Valid Period**: Aug 29 - Nov 27, 2025
+- **Validation Method**: DNS-01 (DigitalOcean API)
+- **Auto-Renewal**: ✅ Enabled
+- **Browser Trust**: ✅ Fully trusted
+
+#### Certificate Verification Commands
+```bash
+# Check certificate details
+curl -v https://hbohlen.systems 2>&1 | grep -E "(subject:|issuer:|CN=)"
+
+# Verify without certificate warnings
+curl -I https://hbohlen.systems
+
+# Check ACME certificate storage
+sudo grep '"main":"hbohlen.systems"' /etc/dokploy/traefik/dynamic/acme.json
+```
+
+#### DNS-01 vs HTTP-01 Comparison
+| Method | HTTP-01 | DNS-01 (Current) |
+|--------|---------|------------------|
+| **Server Access** | Public HTTP required | No public access needed |
+| **Security** | Less secure (public exposure) | More secure (Tailscale-only) |
+| **DNS Changes** | Not required | Not required |
+| **API Token** | Not required | DigitalOcean token needed |
+| **Firewall** | Must allow public HTTP | Can restrict to Tailscale |
+| **Compatibility** | Works with any DNS | Requires supported DNS provider |
+
+#### Future Certificate Management
+- **Auto-Renewal**: Certificates renew automatically ~60 days before expiration
+- **New Domains**: Use same DNS-01 method for subdomains
+- **Monitoring**: Check Traefik logs for renewal status
+- **Backup**: ACME data stored in `/etc/dokploy/traefik/dynamic/acme.json`
 
 ### Debug Commands
 ```bash
@@ -195,6 +294,12 @@ sudo ss -tlnp | grep LISTEN
 
 # Check Dokploy configuration
 sudo cat /etc/dokploy/traefik/dynamic/dokploy.yml
+
+# Certificate troubleshooting
+curl -v https://hbohlen.systems 2>&1 | grep -E "(subject:|issuer:|CN=)"  # Check cert details
+curl -I https://hbohlen.systems  # Test HTTPS without cert warnings
+sudo grep '"main":"hbohlen.systems"' /etc/dokploy/traefik/dynamic/acme.json  # Check ACME storage
+docker logs dokploy-traefik --tail 20 | grep -i "certificate\|acme\|dns"  # Check cert logs
 
 # Check system resources
 df -h  # Disk usage
