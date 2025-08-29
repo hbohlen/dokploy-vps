@@ -1,12 +1,43 @@
-FROM falkordb/falkordb:edge
+FROM node:18-bullseye AS browser-build
 
-RUN mkdir -p /var/lib/falkordb/data && \
-    chown -R falkordb:falkordb /var/lib/falkordb
+# Build FalkorDB Browser
+WORKDIR /app
+RUN apt-get update && apt-get install -y git
+RUN git clone https://github.com/FalkorDB/falkordb-browser.git .
+RUN npm install && npm run build
 
-EXPOSE 6379 3000
+FROM falkordb/falkordb:latest
 
-WORKDIR /var/lib/falkordb
+# Install nginx and bash to serve the browser
+RUN apt-get update && apt-get install -y nginx bash && rm -rf /var/lib/apt/lists/*
 
-USER falkordb
+# Copy browser build
+COPY --from=browser-build /app/.next/standalone /var/www/html
 
-CMD ["falkordb-server", "--loadmodule", "/usr/lib/falkordb/src/falkordb.so", "--port", "6379", "--bind", "0.0.0.0"]
+# Create nginx config for browser
+RUN mkdir -p /etc/nginx/sites-available /etc/nginx/conf.d && \
+    echo 'server { \
+        listen 80; \
+        server_name _; \
+        root /var/www/html; \
+        index index.html; \
+        \
+        location / { \
+            try_files $uri $uri/ /index.html; \
+        } \
+        \
+        location /api { \
+            proxy_pass http://127.0.0.1:6379; \
+            proxy_set_header Host $host; \
+            proxy_set_header X-Real-IP $remote_addr; \
+        } \
+    }' > /etc/nginx/sites-available/default && \
+    ln -sf /etc/nginx/sites-available/default /etc/nginx/conf.d/default.conf
+# Startup script
+RUN echo '#!/bin/bash \n\
+nginx -g "daemon off;" & \n\
+exec falkordb-server --loadmodule /usr/lib/redis/modules/falkordb.so --port 6379 --bind 0.0.0.0 --protected-mode no' > /start.sh && chmod +x /start.sh
+
+EXPOSE 80 6379
+
+CMD ["/start.sh"]
