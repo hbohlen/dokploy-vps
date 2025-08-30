@@ -1,37 +1,54 @@
-# Use minimal Alpine Node.js for browser build
-FROM node:18-alpine AS browser-build
+FROM node:18-bullseye AS browser-build
 
+# Build FalkorDB Browser
 WORKDIR /app
+RUN apt-get update && apt-get install -y git
+RUN git clone https://github.com/FalkorDB/falkordb-browser.git .
+RUN npm install && npm run build
 
-# Install minimal dependencies for git clone
-RUN apk add --no-cache git
-
-# Clone and build with optimizations
-RUN git clone --depth=1 --single-branch https://github.com/FalkorDB/falkordb-browser.git . && \
-    # Install all dependencies (needed for build), with optimizations
-    npm ci --no-audit --no-fund --silent && \
-    # Build with higher memory limit and optimizations for low-resource environments
-    NODE_OPTIONS="--max-old-space-size=1024" NEXT_TELEMETRY_DISABLED=1 npm run build && \
-    # Clean up to reduce final image size - remove everything except built files
-    rm -rf .git src components pages styles public/icons node_modules package*.json && \
-    # Remove source maps and other non-essential files to save space
-    find .next -name "*.map" -delete && \
-    find . -name "*.md" -delete && \
-    find . -name "*.json" ! -path "./.next/*" -delete
-
-# Use official FalkorDB image as base (already optimized)
 FROM falkordb/falkordb:latest
 
-# Don't install bash - use sh which is already available
-# Copy only essential production files
-COPY --from=browser-build /app/.next/standalone /app
-COPY --from=browser-build /app/.next/static /app/.next/static
-COPY --from=browser-build /app/public /app/public
+# Install nginx and bash to serve the browser
+RUN apt-get update && apt-get install -y nginx bash && rm -rf /var/lib/apt/lists/*
 
-# Use sh instead of bash for smaller footprint
-RUN echo '#!/bin/sh\ncd /app && node server.js &\nexec falkordb-server --loadmodule /usr/lib/redis/modules/falkordb.so --port 6379 --bind 0.0.0.0 --protected-mode no' > /start.sh && \
-    chmod +x /start.sh
+# Copy browser build
+COPY --from=browser-build /app/.next/standalone /var/www/html
 
-EXPOSE 3000 6379
+# Create nginx config for browser
+RUN mkdir -p /etc/nginx/sites-available /etc/nginx/conf.d && \
+    echo 'server {
+        listen 80;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    server {
+        listen 443 ssl;
+        server_name _;
+        root /var/www/html;
+        index index.html;
+
+        ssl_certificate /etc/ssl/certs/hbohlen.crt;
+        ssl_certificate_key /etc/ssl/private/hbohlen.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /api {
+            proxy_pass http://127.0.0.1:6379;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }' > /etc/nginx/sites-available/default && \
+    ln -sf /etc/nginx/sites-available/default /etc/nginx/conf.d/default.conf
+# Startup script
+RUN echo '#!/bin/bash \n\
+nginx -g "daemon off;" & \n\
+exec falkordb-server --loadmodule /usr/lib/redis/modules/falkordb.so --port 6379 --bind 0.0.0.0 --protected-mode no' > /start.sh && chmod +x /start.sh
+
+EXPOSE 80 443 6379
 
 CMD ["/start.sh"]
